@@ -1,5 +1,8 @@
 [phases.setup]
-nixPkgs = ["ffmpeg"]
+nixPkgs = ["ffmpeg", "python312"]
 
 [phases.install]
 cmds = ["pip install --no-cache-dir -r requirements.txt"]
+
+[start]
+cmd = "python server.py"
