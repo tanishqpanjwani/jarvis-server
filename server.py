@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+WS_MAX_SIZE = 10 * 1024 * 1024  # 10MB
+
 # ── Load Whisper model once at startup ───────────────────────────────────────
 logger.info("Loading Whisper model...")
 whisper_model = whisper.load_model("tiny")  # tiny = fastest, good enough for commands
