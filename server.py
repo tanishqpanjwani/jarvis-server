@@ -92,12 +92,20 @@ def ask_groq(question: str) -> str:
 
 def transcribe_audio(audio_bytes: bytes) -> str:
     """Write audio bytes to a temp file and transcribe with Whisper."""
+    import numpy as np
+    import soundfile as sf
+
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         f.write(audio_bytes)
         tmp_path = f.name
 
     try:
-        result = whisper_model.transcribe(tmp_path, language="en", fp16=False)
+        # Load WAV directly with soundfile (no ffmpeg needed)
+        audio_data, sample_rate = sf.read(tmp_path, dtype="float32")
+        # Whisper expects mono 16kHz
+        if len(audio_data.shape) > 1:
+            audio_data = audio_data.mean(axis=1)
+        result = whisper_model.transcribe(audio_data, language="en", fp16=False)
         return result["text"].strip()
     except Exception as e:
         logger.error(f"Whisper error: {e}")
