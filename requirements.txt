@@ -3,5 +3,6 @@ uvicorn==0.30.1
 websockets==12.0
 openai-whisper
 groq==0.9.0
+httpx==0.27.2
 numpy<2.0.0
 ffmpeg-python
