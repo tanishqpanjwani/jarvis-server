@@ -26,7 +26,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 WS_MAX_SIZE = 10 * 1024 * 1024  # 10MB
 
 # ── Load Whisper model once at startup ───────────────────────────────────────
-logger.info("Loading Whisper model...")
+logger.info("Loading Whisper model (v2)...")
 whisper_model = whisper.load_model("tiny")  # tiny = fastest, good enough for commands
 logger.info("Whisper ready.")
 
@@ -139,7 +139,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
 
                 # Transcribe
-                transcript = transcribe_audio(audio_bytes)
+                try:
+                    transcript = transcribe_audio(audio_bytes)
+                except Exception as e:
+                    logger.error(f"Transcription crashed: {e}", exc_info=True)
+                    await websocket.send_text(json.dumps({"type": "error", "message": str(e)}))
+                    continue
                 logger.info(f"Transcript: '{transcript}'")
 
                 if not transcript:
