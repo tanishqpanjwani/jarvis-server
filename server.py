@@ -1,7 +1,7 @@
 """
 Jarvis Railway Server
 - Receives audio from laptop mic (or ESP32 later)
-- Whisper transcribes it
+- faster-whisper transcribes it (4x faster than whisper on CPU)
 - Groq generates response
 - Sends command/response back over WebSocket
 """
@@ -12,7 +12,7 @@ import tempfile
 import logging
 from typing import Set
 
-import whisper
+from faster_whisper import WhisperModel
 from groq import Groq
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,9 +25,9 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 WS_MAX_SIZE = 10 * 1024 * 1024  # 10MB
 
-# ── Load Whisper model once at startup ───────────────────────────────────────
+# ── Load faster-whisper model once at startup ─────────────────────────────────
 logger.info("Loading Whisper model...")
-whisper_model = whisper.load_model("tiny")  # tiny = fastest, good enough for commands
+whisper_model = WhisperModel("tiny", device="cpu", compute_type="int8")
 logger.info("Whisper ready.")
 
 # ── Groq client ───────────────────────────────────────────────────────────────
@@ -37,8 +37,6 @@ groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
 connected_clients: Set[WebSocket] = set()
 
 # ── Known commands ────────────────────────────────────────────────────────────
-# These get sent directly to the ESP32 / laptop as action commands
-# Everything else gets answered by Groq as a question
 COMMANDS = {
     "open":        "SERVO_OPEN",
     "open visor":  "SERVO_OPEN",
@@ -56,7 +54,6 @@ COMMANDS = {
 
 
 def detect_command(transcript: str) -> str | None:
-    """Check if transcript matches a known command."""
     t = transcript.lower().strip().rstrip(".,!?")
     for phrase, command in COMMANDS.items():
         if phrase in t:
@@ -65,7 +62,6 @@ def detect_command(transcript: str) -> str | None:
 
 
 def ask_groq(question: str) -> str:
-    """Send a question to Groq and get a Jarvis-style response."""
     try:
         response = groq_client.chat.completions.create(
             model="llama3-8b-8192",
@@ -91,40 +87,23 @@ def ask_groq(question: str) -> str:
 
 
 def transcribe_audio(audio_bytes: bytes) -> str:
-    """Write audio bytes to a temp file and transcribe with Whisper."""
-    import numpy as np
-    import soundfile as sf
-
+    """Write audio bytes to temp WAV and transcribe with faster-whisper."""
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         f.write(audio_bytes)
         tmp_path = f.name
 
     try:
-        # Load WAV directly with soundfile (no ffmpeg needed)
-        audio_data, sample_rate = sf.read(tmp_path, dtype="float32")
-        logger.info(f"Audio loaded: shape={audio_data.shape}, sr={sample_rate}, max={audio_data.max():.4f}, min={audio_data.min():.4f}")
-
-        # Whisper expects mono 16kHz
-        if len(audio_data.shape) > 1:
-            audio_data = audio_data.mean(axis=1)
-
-        # Check if audio is actually silent
-        if audio_data.max() < 0.001:
-            logger.warning("Audio appears to be silent!")
-            return ""
-
-        result = whisper_model.transcribe(
-            audio_data,
-            fp16=False,
+        segments, info = whisper_model.transcribe(
+            tmp_path,
             language="en",
-            task="transcribe",
-            initial_prompt="Open, close, shutdown, volume up, volume down, mute, lock.",
-            temperature=0.0,
-            no_speech_threshold=0.3,
-            logprob_threshold=-1.0,
+            beam_size=1,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=500),
         )
-        logger.info(f"Raw whisper result: {result}")
-        return result["text"].strip()
+        logger.info(f"Detected language: {info.language} ({info.language_probability:.2f})")
+        transcript = " ".join(s.text for s in segments).strip()
+        logger.info(f"Transcript: '{transcript}'")
+        return transcript
     except Exception as e:
         logger.error(f"Whisper error: {e}", exc_info=True)
         return ""
@@ -141,11 +120,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         while True:
-            # Receive a message — either audio bytes or a JSON control message
             data = await websocket.receive()
 
             if "bytes" in data:
-                # Audio chunk received — transcribe and process
                 audio_bytes = data["bytes"]
                 logger.info(f"Received audio: {len(audio_bytes)} bytes")
 
@@ -156,9 +133,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     }))
                     continue
 
-                # Transcribe
                 transcript = transcribe_audio(audio_bytes)
-                logger.info(f"Transcript: '{transcript}'")
 
                 if not transcript:
                     await websocket.send_text(json.dumps({
@@ -167,13 +142,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     }))
                     continue
 
-                # Send transcript back so UI can display it
                 await websocket.send_text(json.dumps({
                     "type": "transcript",
                     "text": transcript,
                 }))
 
-                # Check if it's a command
                 command = detect_command(transcript)
                 if command:
                     logger.info(f"Command detected: {command}")
@@ -183,7 +156,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         "transcript": transcript,
                     }))
                 else:
-                    # It's a question — ask Groq
                     logger.info("Sending to Groq...")
                     answer = ask_groq(transcript)
                     logger.info(f"Groq response: {answer}")
@@ -194,7 +166,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     }))
 
             elif "text" in data:
-                # Control message from client (e.g. ping)
                 msg = json.loads(data["text"])
                 if msg.get("type") == "ping":
                     await websocket.send_text(json.dumps({"type": "pong"}))
@@ -204,7 +175,7 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.info(f"Client disconnected. Total: {len(connected_clients)}")
     except Exception as e:
         connected_clients.discard(websocket)
-        logger.error(f"WebSocket error: {e}")
+        logger.error(f"WebSocket error: {e}", exc_info=True)
 
 
 @app.get("/health")
