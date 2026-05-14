@@ -97,8 +97,7 @@ def transcribe_audio(audio_bytes: bytes) -> str:
             tmp_path,
             language="en",
             beam_size=1,
-            vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=500),
+            vad_filter=False,
         )
         logger.info(f"Detected language: {info.language} ({info.language_probability:.2f})")
         transcript = " ".join(s.text for s in segments).strip()
