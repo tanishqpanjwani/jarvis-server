@@ -26,7 +26,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 WS_MAX_SIZE = 10 * 1024 * 1024  # 10MB
 
 # ── Load Whisper model once at startup ───────────────────────────────────────
-logger.info("Loading Whisper model (v2)...")
+logger.info("Loading Whisper model...")
 whisper_model = whisper.load_model("tiny")  # tiny = fastest, good enough for commands
 logger.info("Whisper ready.")
 
@@ -102,13 +102,22 @@ def transcribe_audio(audio_bytes: bytes) -> str:
     try:
         # Load WAV directly with soundfile (no ffmpeg needed)
         audio_data, sample_rate = sf.read(tmp_path, dtype="float32")
+        logger.info(f"Audio loaded: shape={audio_data.shape}, sr={sample_rate}, max={audio_data.max():.4f}, min={audio_data.min():.4f}")
+
         # Whisper expects mono 16kHz
         if len(audio_data.shape) > 1:
             audio_data = audio_data.mean(axis=1)
+
+        # Check if audio is actually silent
+        if audio_data.max() < 0.001:
+            logger.warning("Audio appears to be silent!")
+            return ""
+
         result = whisper_model.transcribe(audio_data, language="en", fp16=False)
+        logger.info(f"Raw whisper result: {result}")
         return result["text"].strip()
     except Exception as e:
-        logger.error(f"Whisper error: {e}")
+        logger.error(f"Whisper error: {e}", exc_info=True)
         return ""
     finally:
         os.unlink(tmp_path)
@@ -139,12 +148,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
 
                 # Transcribe
-                try:
-                    transcript = transcribe_audio(audio_bytes)
-                except Exception as e:
-                    logger.error(f"Transcription crashed: {e}", exc_info=True)
-                    await websocket.send_text(json.dumps({"type": "error", "message": str(e)}))
-                    continue
+                transcript = transcribe_audio(audio_bytes)
                 logger.info(f"Transcript: '{transcript}'")
 
                 if not transcript:
