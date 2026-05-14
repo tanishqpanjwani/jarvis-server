@@ -113,7 +113,16 @@ def transcribe_audio(audio_bytes: bytes) -> str:
             logger.warning("Audio appears to be silent!")
             return ""
 
-        result = whisper_model.transcribe(audio_data, language="en", fp16=False)
+        result = whisper_model.transcribe(
+            audio_data,
+            fp16=False,
+            language="en",
+            task="transcribe",
+            initial_prompt="Open, close, shutdown, volume up, volume down, mute, lock.",
+            temperature=0.0,
+            no_speech_threshold=0.3,
+            logprob_threshold=-1.0,
+        )
         logger.info(f"Raw whisper result: {result}")
         return result["text"].strip()
     except Exception as e:
